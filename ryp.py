@@ -785,10 +785,10 @@ def _check_R_variable_name(R_variable_name: str) -> None:
                 f'R_variable_name {R_variable_name!r} starts with a period '
                 f'followed by a digit, which is not a valid R variable name')
             raise ValueError(error_message)
-    elif not R_variable_name[0].isidentifier():
+    elif not R_variable_name[0].isidentifier() or R_variable_name[0] == '_':
         error_message = (
-            f'R_variable_name {R_variable_name!r} must start with a letter, '
-            f'number, period or underscore')
+            f'R_variable_name {R_variable_name!r} must start with a letter or '
+            f'period')
         raise ValueError(error_message)
     if not re.fullmatch(r'[\w.]*', R_variable_name[1:]):
         invalid_characters = \
@@ -798,7 +798,7 @@ def _check_R_variable_name(R_variable_name: str) -> None:
             description = f'the character {invalid_characters[0]!r}'
         else:
             description = f"the characters " + ", ".join(
-                f'{character!r}' for character in invalid_characters) + \
+                f'{character!r}' for character in invalid_characters[:-1]) + \
                 f' and {invalid_characters[-1]!r}'
         error_message = (
             f'R_variable_name {R_variable_name!r} contains {description}, but '
@@ -823,10 +823,11 @@ def _is_valid_R_variable_name(R_variable_name: str) -> bool:
         True if R_variable_name is a valid R variable name, False otherwise.
     """
     return R_variable_name and (
-            R_variable_name[0].isidentifier() or (
+            (R_variable_name[0].isidentifier() and
+             R_variable_name[0] != '_') or (
                 R_variable_name[0] == '.' and (
                     len(R_variable_name) == 1 or
-                    R_variable_name[1].isdigit()))) and \
+                    not R_variable_name[1].isdigit()))) and \
         re.fullmatch(r'[\w.]*', R_variable_name[1:]) and \
         R_variable_name not in _R_keywords and not \
             (R_variable_name.startswith('..') and
@@ -1049,7 +1050,8 @@ def _convert_object_to_arrow(python_object: Any,
             # old version of pandas without future.no_silent_downcasting
             python_object.fillna(np.nan, inplace=True)
         if not is_pandas:
-            python_object = python_object.values
+            # Copy, since .values is read-only under pandas 3's copy-on-write
+            python_object = python_object.to_numpy(dtype=object, copy=True)
     # This works for everything except pd.NA/pd.NaT, which are handled above
     # if pandas is installed and are impossible if pandas is not installed
     python_object[python_object != python_object] = None
@@ -1059,9 +1061,9 @@ def _convert_object_to_arrow(python_object: Any,
         is_period = False
         is_datetime = False
         try:
-            if np.__version__[0] == 1:
+            if int(np.__version__.split('.')[0]) == 1:
                 with warnings.catch_warnings():
-                    warnings.simplefilter('error', np.ComplexWarning)
+                    warnings.simplefilter('error', _ComplexWarning)
                     arrow = pa.array(python_object)
             else:
                 arrow = pa.array(python_object)
@@ -1250,7 +1252,7 @@ def _convert_object_to_arrow(python_object: Any,
                 raise TypeError(error_message) from e
             else:
                 raise
-        except np.ComplexWarning as e:
+        except _ComplexWarning as e:
             if str(e) == 'Casting complex values to real discards the ' \
                          'imaginary part':
                 error_message = (
@@ -1301,6 +1303,10 @@ def _convert_object_to_arrow(python_object: Any,
             # The dtype == object check avoids an infinite loop by making sure
             # the dtype has not been converted from object yet
             if pa.types.is_int64(arrow.type):
+                # np.float128 isn't defined on Windows
+                float16_or_float128 = (np.float16,) \
+                    if platform.system() == 'Windows' else \
+                    (np.float16, np.float128)
                 # Work around github.com/apache/arrow/issues/40906
                 _check_object_elements(
                     python_object, python_object_description, is_pandas,
@@ -1308,9 +1314,8 @@ def _convert_object_to_arrow(python_object: Any,
                     allowed_dtypes={np.int8, np.int16, np.int32, np.int64,
                                     np.uint8, np.uint16, np.uint32, np.uint64,
                 # Work around github.com/apache/arrow/issues/40910
-                                    np.float16, np.float128})
+                                    *float16_or_float128})
                 values = python_object.values if is_pandas else python_object
-                float16_or_float128 = np.float16, np.float128
                 if any(isinstance(element, float16_or_float128)
                        for element in values):
                     python_object = python_object.astype(float)
@@ -1990,6 +1995,7 @@ def to_r(python_object: Any, R_variable_name: str, *,
             dtype = python_object.dtype
         shape = None
         converted_index_separately = False
+        converted_to_data_frame = False
         add_integer64 = False
         # Defer loading Arrow until calling to_py() or to_r() for speed
         if 'pyarrow' in sys.modules:
@@ -2506,8 +2512,9 @@ def to_r(python_object: Any, R_variable_name: str, *,
                         if any(dtype == np.float16 or dtype == 'float128'
                                for dtype in unique_dtypes):
                             python_object = python_object.astype({
-                                col: float for col in
-                                python_object.select_dtypes(['float128'])})
+                                col: float for col, dtype in
+                                python_object.dtypes.items()
+                                if dtype == np.float16 or dtype == 'float128'})
                         # If any columns are uint32/uint64/int64 (which we
                         # handle zero-copy as Series), object, or complex, fall
                         # back to converting to dict, converting each column to
@@ -2863,6 +2870,11 @@ def to_r(python_object: Any, R_variable_name: str, *,
                     if dtype == np.complex64 or dtype == np.complex128:
                         if dtype == np.complex64:
                             python_object = python_object.astype(complex)
+                        # R stores arrays contiguously in column-major
+                        # (Fortran) order, so make sure the memory we copy
+                        # from is laid out the same way (this also handles
+                        # non-contiguous views, like a[::2] or a[::-1])
+                        python_object = np.asfortranarray(python_object)
                         if python_object.size == 0:
                             # In NumPy, empty >=2D arrays have a length of 1,
                             # but in R they have a length of 0
@@ -2898,8 +2910,10 @@ def to_r(python_object: Any, R_variable_name: str, *,
                                 f"data type 'object'")
                             if not isinstance(arrow, pa.Array):
                                 # complex; convert via NumPy, not Arrow
-                                python_object = \
-                                    arrow.reshape(python_object.shape)
+                                # arrow was flattened in Fortran order, so
+                                # reshape in Fortran order too
+                                python_object = arrow.reshape(
+                                    python_object.shape, order='F')
                                 arrow = None
                                 result = to_r(python_object,
                                               (python_object_name, rmemory))
@@ -2913,12 +2927,27 @@ def to_r(python_object: Any, R_variable_name: str, *,
                                 is_timedelta64 or arrow is not None and
                                 pa.types.is_duration(arrow.type)):
                             nrows, ncols = python_object.shape
+                            # colnames has already been converted to an R
+                            # character vector, so read the names back out
+                            if colnames is not None:
+                                colname_length = _rlib.Rf_xlength(colnames)
+                                if colname_length != ncols:
+                                    error_message = (
+                                        f'colnames have length '
+                                        f'{colname_length:,}, but '
+                                        f'{python_object_name}.shape[1] is '
+                                        f'{ncols:,}')
+                                    raise ValueError(error_message)
+                                names = [_ffi.string(_rlib.R_CHAR(
+                                    _rlib.STRING_ELT(colnames, i)))
+                                    .decode('utf-8') for i in range(ncols)]
+                            else:
+                                names = [f'V{i}' for i in range(1, ncols + 1)]
                             arrow = pa.RecordBatch.from_arrays([
                                 arrow[i * nrows: (i + 1) * nrows]
-                                for i in range(ncols)],
-                                names=colnames if colnames is not None else [
-                                    f'V{i}' for i in range(1, ncols + 1)])
+                                for i in range(ncols)], names=names)
                             is_matrix = is_multidimensional_ndarray = False
+                            converted_to_data_frame = True
             # Only support arrow Arrays when recursing, not at the top level
             elif is_pyarrow_array:
                 if top_level:
@@ -3205,8 +3234,9 @@ def to_r(python_object: Any, R_variable_name: str, *,
                             f'{python_object_name} has length '
                             f'{len(python_object):,}')
                         raise ValueError(error_message)
-                _rlib.Rf_setAttrib(result, _rlib.R_RowNamesSymbol if is_df else
-                                           _rlib.R_NamesSymbol, rownames)
+                _rlib.Rf_setAttrib(result, _rlib.R_RowNamesSymbol
+                                   if is_df or converted_to_data_frame else
+                                   _rlib.R_NamesSymbol, rownames)
             # For int64 and uint64, manually add 'integer64' as a class
             # (otherwise the result would just be a vector of doubles)
             if add_integer64:
@@ -3304,6 +3334,8 @@ def to_py(R_statement: str, *,
         if format is None:
             format = _config['to_py_format']
         elif isinstance(format, dict):
+            # Copy so we don't modify the caller's dict
+            format = dict(format)
             for key in 'vector', 'matrix', 'data.frame':
                 if key not in format or format[key] is None:
                     format[key] = _config['to_py_format'][key] \
@@ -3357,6 +3389,13 @@ def to_py(R_statement: str, *,
                     R_symbol = _rlib.Rf_install(R_statement.encode('utf-8'))
                     # Get the R object corresponding to this symbol
                     R_object = _rlib.Rf_findVar(R_symbol, _rlib.R_GlobalEnv)
+                    # Rf_findVar() does not force promises, e.g. lazy-loaded
+                    # datasets like iris or variables created with
+                    # delayedAssign(), so evaluate those with r() instead,
+                    # which forces them (and handles any errors raised while
+                    # forcing them)
+                    if _rlib.TYPEOF(R_object) == _rlib.PROMSXP:
+                        R_object = r((R_statement, rmemory))
                 else:
                     # When calling r() from to_py(), return the object that
                     # results from evaluating R_code, instead of None. Also,
@@ -4223,7 +4262,12 @@ def options(*,
             raise ValueError(error_message)
         _config['plot_height'] = plot_height
         no_config_set = False
-    if plot_width is not None or plot_height is not None:
+    # Only update the plotting device inside Jupyter notebooks (where the
+    # svglite device and .tempfile exist); elsewhere, the new values just get
+    # stored in _config. If ryp hasn't been initialized yet,
+    # _jupyter_notebook is None and initialization will pick up the new values.
+    if _jupyter_notebook and (plot_width is not None or
+                              plot_height is not None):
         r(f'options(device=function() {{ svglite(.tempfile, '
           f'width={_config["plot_width"]}, '
           f'height={_config["plot_height"]})}})')
@@ -4244,6 +4288,8 @@ _R_keywords = {'if', 'else', 'repeat', 'while', 'function', 'for', 'in',
                'next', 'break', 'TRUE', 'FALSE', 'NULL', 'Inf', 'NaN', 'NA',
                'NA_integer_', 'NA_real_', 'NA_complex_', 'NA_character_',
                '...'}
+_ComplexWarning = np.exceptions.ComplexWarning \
+    if hasattr(np, 'exceptions') else np.ComplexWarning
 _sparse_matrix_classes = {b'dgRMatrix', b'dgCMatrix', b'dgTMatrix',
                           b'ngRMatrix', b'ngCMatrix', b'ngTMatrix',
                           b'lgRMatrix', b'lgCMatrix', b'lgTMatrix'}
