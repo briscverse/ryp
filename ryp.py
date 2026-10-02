@@ -913,6 +913,37 @@ def _convert_names(names: Any, names_type: Literal['rownames', 'colnames'],
     return converted_names
 
 
+def _contains_data_frame(python_object: Any,
+                         visited: set[int] | None = None) -> bool:
+    """
+    Return whether python_object is a polars or pandas DataFrame, or a list,
+    tuple, or dict that (possibly recursively) contains one.
+
+    Args:
+        python_object: the Python object to check
+        visited: the ids of the containers already checked, to avoid infinite
+                 loops on containers with circular references
+
+    Returns:
+        Whether python_object is or contains a DataFrame.
+    """
+    pd = sys.modules.get('pandas')
+    pl = sys.modules.get('polars')
+    if pd is not None and isinstance(python_object, pd.DataFrame) or \
+            pl is not None and isinstance(python_object, pl.DataFrame):
+        return True
+    if isinstance(python_object, (list, tuple, dict)):
+        if visited is None:
+            visited = set()
+        if id(python_object) in visited:
+            return False
+        visited.add(id(python_object))
+        return any(_contains_data_frame(element, visited) for element in (
+            python_object.values() if isinstance(python_object, dict) else
+            python_object))
+    return False
+
+
 def _is_supported_pyarrow_dtype(pyarrow_dtype: 'DataType') -> bool:
     """
     Return whether pyarrow_dtype is supported by ryp.
@@ -1049,12 +1080,27 @@ def _convert_object_to_arrow(python_object: Any,
         except pd._config.config.OptionError:
             # old version of pandas without future.no_silent_downcasting
             python_object.fillna(np.nan, inplace=True)
-        if not is_pandas:
-            # Copy, since .values is read-only under pandas 3's copy-on-write
-            python_object = python_object.to_numpy(dtype=object, copy=True)
+        # Convert to a writable NumPy array (pandas Series included), since
+        # .values is read-only under pandas 3's copy-on-write and elements
+        # are modified in place below
+        python_object = python_object.to_numpy(dtype=object, copy=True)
+        is_pandas = False
     # This works for everything except pd.NA/pd.NaT, which are handled above
     # if pandas is installed and are impossible if pandas is not installed
     python_object[python_object != python_object] = None
+    # pa.array() segfaults (as of pyarrow 25) on object arrays where an
+    # np.datetime64 is followed by a NumPy bool, integer, float or complex
+    # scalar, so give the mixed-types error for these up front. (Note that
+    # np.timedelta64 is a subclass of np.signedinteger, so exclude it.)
+    values = python_object.values if is_pandas else python_object
+    if any(isinstance(element, np.datetime64) for element in values) and \
+            any(isinstance(element, (np.bool_, np.number)) and
+                not isinstance(element, np.timedelta64)
+                for element in values):
+        error_message = (
+            f'{python_object_description} and elements with a mix of types, '
+            f'and cannot be represented as any single R vector type')
+        raise TypeError(error_message)
     while True:
         is_complex = False
         is_float128 = False
@@ -1081,8 +1127,11 @@ def _convert_object_to_arrow(python_object: Any,
                 is_period = True
             elif error_string == (
                     'numpy.datetime64 scalars cannot be mixed with other '
-                    'Python scalar values currently'):
-                # Mix of np.datetime64 and datetime.datetime
+                    'Python scalar values currently') or \
+                    error_string.startswith(
+                        'Cannot mix NumPy datetime64 units'):
+                # Mix of np.datetime64 and datetime.datetime, or (in newer
+                # versions of pyarrow) of np.datetime64s with different units
                 is_datetime = True
             elif re.match('Cannot mix NumPy dtypes u?int(8|16|32|64) and '
                           'u?int(8|16|32|64)', error_string):
@@ -1194,9 +1243,11 @@ def _convert_object_to_arrow(python_object: Any,
                 raise
         except pa.ArrowTypeError as e:
             error_string = str(e)
-            if error_string == (
-                    "object of type <class 'pandas._libs.tslibs.period."
-                    "Period'> cannot be converted to int"):
+            # pandas 3 calls the class pandas.Period, while older pandas calls
+            # it pandas._libs.tslibs.period.Period
+            if error_string.startswith("object of type <class 'pandas.") and \
+                    error_string.endswith(
+                        "Period'> cannot be converted to int"):
                 is_period = True
             elif error_string.startswith('Expected') or \
                     'cannot be converted to' in error_string:
@@ -1849,6 +1900,14 @@ def to_r(python_object: Any, R_variable_name: str, *,
                   None if python_object is bytes/bytearray (since raw vectors
                   lack rownames) or a pandas Series or DataFrame (since they
                   already have rownames, i.e. an index).
+                  Alternatively, a string naming a column of a polars or
+                  pandas DataFrame to use as the rownames; the column is
+                  removed from the converted data.frame or matrix. If
+                  python_object is a list, tuple, or dict, the column is used
+                  as the rownames of every DataFrame it contains (each of
+                  which must have that column) and other elements are
+                  converted without rownames; at least one DataFrame must be
+                  present.
         colnames: a container (list, tuple, Series, etc.) of strings that will
                   be converted to R and used as the colnames for converted
                   multidimensional NumPy arrays and scipy sparse arrays and
@@ -2047,8 +2106,9 @@ def to_r(python_object: Any, R_variable_name: str, *,
             if is_matrix:
                 format = 'matrix'
         # Allow adding rownames of any length to 0 x 0 polars DataFrames
+        # (unless rownames is a string naming a column, which is handled below)
         if is_df and is_polars and rownames is not None and \
-                len(python_object) == 0:
+                not isinstance(rownames, str) and len(python_object) == 0:
             if not hasattr(rownames, '__len__'):
                 error_message = \
                     f'rownames has unsupported type {type(rownames).__name__!r}'
@@ -2059,14 +2119,167 @@ def to_r(python_object: Any, R_variable_name: str, *,
                 is_multidimensional_ndarray = True
             dtype = python_object.dtype
         try:
+            # If rownames is a string, it names a column of a DataFrame to use
+            # as the rownames. Unlike other rownames, which are converted to R
+            # once at the top level and shared by every element when recursing,
+            # the string is passed down unchanged when recursing, and each
+            # DataFrame gets its own rownames from its own column. Other
+            # elements are converted without rownames, but at the top level,
+            # python_object must be a DataFrame or contain at least one.
+            rownames_from_column = False
+            if isinstance(rownames, str):
+                if is_df:
+                    rownames_column = rownames
+                    rownames_from_column = True
+                    df_type = 'pandas' if is_pandas else 'polars'
+                    # Check that the column exists (and, for pandas, that
+                    # exactly one column has this name)
+                    num_matching_columns = \
+                        sum(col == rownames_column
+                            for col in python_object.columns)
+                    if num_matching_columns == 0:
+                        error_message = (
+                            f'rownames is the string {rownames_column!r}, but '
+                            f'{python_object_name} is a {df_type} DataFrame '
+                            f'with no column of that name')
+                        raise ValueError(error_message)
+                    if num_matching_columns > 1:
+                        error_message = (
+                            f'rownames is the string {rownames_column!r}, but '
+                            f'{python_object_name} is a pandas DataFrame with '
+                            f'{num_matching_columns:,} columns of that name, '
+                            f'so it is ambiguous which one to use')
+                        raise ValueError(error_message)
+                    # pandas DataFrames must have the default index, since
+                    # the column will become the index
+                    if is_pandas:
+                        index = python_object.index
+                        if not (isinstance(index, pd.RangeIndex) and
+                                index.start == 0 and
+                                index.stop == len(python_object) and
+                                index.step == 1):
+                            error_message = (
+                                f'rownames is the string {rownames_column!r}, '
+                                f'but {python_object_name} is a pandas '
+                                f'DataFrame that already has a non-default '
+                                f'index, which would also be converted to '
+                                f'rownames.\nCall reset_index() or '
+                                f'reset_index(drop=True) before calling to_r(), '
+                                f'or set rownames=None to use the index as the '
+                                f'rownames.')
+                            raise ValueError(error_message)
+                    column = python_object[rownames_column]
+                    column_description = \
+                        f'{python_object_name}[{rownames_column!r}]'
+                    # The column must contain strings (or be a categorical with
+                    # string categories), since R rownames must be strings
+                    if is_pandas:
+                        is_string_column = \
+                            pd.api.types.is_string_dtype(column) or \
+                            isinstance(column.dtype, pd.CategoricalDtype) and \
+                            pd.api.types.is_string_dtype(
+                                column.dtype.categories.dtype)
+                    else:
+                        is_string_column = column.dtype == pl.String or \
+                            column.dtype == pl.Categorical or \
+                            column.dtype == pl.Enum
+                    if not is_string_column:
+                        error_message = (
+                            f'rownames is the string {rownames_column!r}, but '
+                            f'{column_description} has data type '
+                            f'{str(column.dtype)!r}, and R rownames must be '
+                            f'strings.\nThe column must contain strings or be '
+                            f'a categorical with string categories.')
+                        raise TypeError(error_message)
+                    # data.frame rownames cannot be missing or duplicated
+                    # (matrix rownames can, so allow these when format is
+                    # 'matrix')
+                    if format != 'matrix':
+                        num_missing = column.isna().sum() if is_pandas else \
+                            column.null_count()
+                        if num_missing:
+                            error_message = (
+                                f'rownames is the string {rownames_column!r}, '
+                                f'but {column_description} contains '
+                                f'{num_missing:,} missing value'
+                                f'{"" if num_missing == 1 else "s"}, and '
+                                f'missing values are not allowed in data.frame '
+                                f'rownames')
+                            raise ValueError(error_message)
+                        num_unique = column.nunique() if is_pandas else \
+                            column.n_unique()
+                        if num_unique != len(column):
+                            error_message = (
+                                f'rownames is the string {rownames_column!r}, '
+                                f'but {column_description} contains duplicate '
+                                f'values, which are not allowed in data.frame '
+                                f'rownames')
+                            raise ValueError(error_message)
+                    if is_pandas:
+                        # Move the column to the index, which will be
+                        # converted to rownames below
+                        python_object = python_object.set_index(
+                            rownames_column)
+                        python_object_name = (
+                            f'{python_object_name}'
+                            f'.set_index({rownames_column!r})')
+                        rownames = None
+                    else:
+                        python_object = python_object.drop(rownames_column)
+                        python_object_name = (
+                            f'{python_object_name}'
+                            f'.drop({rownames_column!r})')
+                        if python_object.width == 0:
+                            # Dropping the only column of a polars DataFrame
+                            # gives a 0 x 0 DataFrame, so convert an empty
+                            # NumPy array with the right number of rows instead
+                            # (as for 0 x 0 polars DataFrames above)
+                            python_object = np.empty((len(column), 0))
+                            is_df = is_polars = False
+                            is_numpy = is_ndarray = is_matrix = \
+                                is_multidimensional_ndarray = True
+                            dtype = python_object.dtype
+                        rownames = _convert_names(
+                            column, 'rownames', python_object,
+                            python_object_name, rmemory)
+                elif isinstance(python_object, (list, tuple, dict)):
+                    if top_level and not _contains_data_frame(python_object):
+                        error_message = (
+                            f'rownames is the string {rownames!r}, which names '
+                            f'a DataFrame column to use as the rownames, but '
+                            f'python_object is a '
+                            f'{type(python_object).__name__!r} that does not '
+                            f'contain any polars or pandas DataFrames')
+                        raise TypeError(error_message)
+                elif top_level:
+                    error_message = (
+                        f'rownames is the string {rownames!r}, which names a '
+                        f'DataFrame column to use as the rownames, but '
+                        f'python_object is not a polars or pandas DataFrame, '
+                        f'or a list, tuple, or dict containing one. It has '
+                        f'type {type(python_object).__name__!r}.')
+                    if isinstance(python_object, (bool, int, float, str,
+                                                  complex)):
+                        error_message += (
+                            f'\n(To name a scalar, pass a length-1 list like '
+                            f'rownames=[{rownames!r}].)')
+                    raise TypeError(error_message)
+                else:
+                    # A non-DataFrame element of a list, tuple, or dict:
+                    # convert without rownames
+                    rownames = None
             # If rownames is not None, and we are not recursing, give an error
             # if python_object is bytes/bytearray (since raw vectors don't have
             # rownames) or a pandas Series or DataFrame (since they already have
             # rownames, i.e. an index). Otherwise, convert the rownames to R.
             # When recursing, assume they're already converted to R, and don't
             # give an error since it's ok if some objects we're recursing over
-            # support rownames and some don't.
-            if rownames is not None and top_level:
+            # support rownames and some don't. (Skip all of this if rownames
+            # came from a column, or is a string being passed down to the
+            # DataFrames in a list, tuple, or dict.)
+            if rownames is not None and top_level and \
+                    not rownames_from_column and \
+                    not isinstance(rownames, str):
                 if isinstance(python_object, (bytes, bytearray)):
                     error_message = (
                         f'python_object has type '
@@ -2550,20 +2763,22 @@ def to_r(python_object: Any, R_variable_name: str, *,
                                     if isinstance(dtype, pd.PeriodDtype)})
                             # Convert ArrowDtype(pa.dictionary(pa.int64(),
                             # pa.string()) to ArrowDtype(pa.dictionary(
-                            # pa.int32(), pa.string())
+                            # pa.int32(), pa.string()), and likewise for uint32
+                            # and uint64 indices, which R's arrow package also
+                            # can't convert
                             if any(isinstance(dtype, pd.ArrowDtype) and
                                    pa.types.is_dictionary(dtype.pyarrow_dtype)
-                                   and pa.types.is_int64(
-                                       dtype.pyarrow_dtype.index_type)
+                                   and dtype.pyarrow_dtype.index_type in (
+                                       pa.int64(), pa.uint32(), pa.uint64())
                                    for dtype in unique_dtypes):
                                 assigns = {}
                                 for col, dtype in python_object.dtypes.items():
                                     if not (isinstance(dtype, pd.ArrowDtype) and
                                             pa.types.is_dictionary(
                                                 dtype.pyarrow_dtype) and
-                                            pa.types.is_int64(
-                                                dtype.pyarrow_dtype
-                                                .index_type)):
+                                            dtype.pyarrow_dtype.index_type
+                                            in (pa.int64(), pa.uint32(),
+                                                pa.uint64())):
                                         continue
                                     new_dtype = pa.dictionary(
                                         pa.int32(),
@@ -2662,10 +2877,12 @@ def to_r(python_object: Any, R_variable_name: str, *,
                                 pd.Index(python_object).to_timestamp())
                         # Convert ArrowDtype(pa.dictionary(pa.int64(),
                         # pa.string()) to ArrowDtype(pa.dictionary(pa.int32(),
-                        # pa.string())
+                        # pa.string()), and likewise for uint32 and uint64
+                        # indices, which R's arrow package also can't convert
                         if is_arrowdtype and pa.types.is_dictionary(
-                                dtype.pyarrow_dtype) and pa.types.is_int64(
-                                dtype.pyarrow_dtype.index_type):
+                                dtype.pyarrow_dtype) and \
+                                dtype.pyarrow_dtype.index_type in (
+                                    pa.int64(), pa.uint32(), pa.uint64()):
                             new_dtype = pa.dictionary(
                                 pa.int32(), dtype.pyarrow_dtype.value_type,
                                 ordered=dtype.pyarrow_dtype.ordered)
@@ -3112,6 +3329,33 @@ def to_r(python_object: Any, R_variable_name: str, *,
                                 else array for array, dtype in
                                 zip(arrow, python_object.dtypes)],
                                 names=arrow.schema.names)
+                else:
+                    # ...for other DictionaryArrays with large_string values
+                    # (e.g. pandas categoricals, whose categories have pandas
+                    # 3's default str dtype), likewise cast the values to string
+                    # to stop older versions of R's arrow package warning about
+                    # "Coercing dictionary values to R character factor levels".
+                    # Rebuild from the indices and dictionary rather than
+                    # casting the DictionaryArray, which works even when it has
+                    # a length of 0...
+                    def large_string_to_string(arrow_array):
+                        if pa.types.is_dictionary(arrow_array.type) and \
+                                pa.types.is_large_string(
+                                    arrow_array.type.value_type):
+                            return pa.DictionaryArray.from_arrays(
+                                arrow_array.indices,
+                                arrow_array.dictionary.cast(pa.string()),
+                                ordered=arrow_array.type.ordered)
+                        return arrow_array
+                    if isinstance(arrow, pa.Array):
+                        arrow = large_string_to_string(arrow)
+                    elif any(pa.types.is_dictionary(field.type) and
+                             pa.types.is_large_string(field.type.value_type)
+                             for field in arrow.schema):
+                        arrow = pa.RecordBatch.from_arrays(
+                            [large_string_to_string(column)
+                             for column in arrow.columns],
+                            names=arrow.schema.names)
                 # ...export to C...
                 array = pyarrow_ffi.new('struct ArrowArray*')
                 schema = pyarrow_ffi.new('struct ArrowSchema*')
@@ -3925,6 +4169,22 @@ def to_py(R_statement: str, *,
                       environment=R_arrow_array)
                 # Import the Arrow array from C into Python
                 result = pa.lib.Array._import_from_c(array_ptr, schema_ptr)
+                # Factors converted to R by Arrow wrap the original
+                # DictionaryArray (via ALTREP), and Arrow returns that array
+                # unchanged when converting back, so a dictionary with unsigned
+                # indices (e.g. from a pandas ArrowDtype column) can round-trip.
+                # pandas can't handle unsigned dictionary indices, so cast them
+                # to the signed index type Arrow would have chosen for an
+                # ordinary R factor with the same number of levels (int8, int16
+                # or int32; see IndexTypeForFactors() in Arrow's
+                # r/src/type_infer.cpp)
+                if pa.types.is_dictionary(result.type) and \
+                        pa.types.is_unsigned_integer(result.type.index_type):
+                    num_levels = len(result.dictionary)
+                    result = result.cast(pa.dictionary(
+                        pa.int8() if num_levels < 127 else
+                        pa.int16() if num_levels < 32_767 else pa.int32(),
+                        result.type.value_type, ordered=result.type.ordered))
                 # If POSIXct and attr(R_object, "tz") is NULL, Arrow erroneously
                 # uses the user's time zone; remove it now that we've converted
                 # to Python

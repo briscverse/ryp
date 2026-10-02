@@ -6,7 +6,7 @@ ryp is a minimalist, powerful Python library for:
   without writing to disk
 - interactively working in both languages at the same time
 
-ryp is an alternative to the widely used [rpy2](https://github.com/rpy2/rpy2) 
+ryp is an alternative to the widely used [rpy2](https://github.com/rpy2/rpy2)
 library. Compared to rpy2, ryp provides:
 - increased stability
 - a much simpler API, with less of a learning curve
@@ -18,11 +18,11 @@ library. Compared to rpy2, ryp provides:
 - support for *every* NumPy, pandas and polars data type representable in base
   R, no matter how obscure
 - support for sparse arrays/matrices
-- recursive conversion of containers like R lists, Python tuples/lists/dicts, 
+- recursive conversion of containers like R lists, Python tuples/lists/dicts,
   and S3/S4/R6 objects
 - full Windows support
 
-ryp does the opposite of the 
+ryp does the opposite of the
 [reticulate](https://rstudio.github.io/reticulate) R library, which runs Python
 inside R.
 
@@ -34,6 +34,7 @@ inside R.
   - [`to_r()`](#to_r)
     - [The `format` argument](#the-format-argument)
     - [The `rownames` and `colnames` arguments](#the-rownames-and-colnames-arguments)
+    - [Using a DataFrame column as the rownames](#using-a-dataframe-column-as-the-rownames)
   - [`to_py()`](#to_py)
     - [The `format` argument](#the-format-argument-1)
     - [The `index` argument](#the-index-argument)
@@ -85,12 +86,12 @@ ryp's only mandatory dependencies are:
 - the [NumPy](https://numpy.org) Python package
 - the [arrow](https://arrow.apache.org/docs/r) R library
 
-R and the arrow R library are automatically installed when installing ryp via 
+R and the arrow R library are automatically installed when installing ryp via
 conda or mamba, but not via pip. ryp uses the R installation pointed to by the
-environment variable `R_HOME`, or if `R_HOME` is not defined or not a 
+environment variable `R_HOME`, or if `R_HOME` is not defined or not a
 directory, by running `R RHOME` through `subprocess.run()`.
 
-ryp also has several optional dependencies, which are not installed 
+ryp also has several optional dependencies, which are not installed
 automatically with pip, conda or mamba. These are:
 - [pandas](https://pandas.pydata.org), for `format='pandas'`
 - [polars](https://pola.rs), for `format='polars'`
@@ -104,13 +105,13 @@ automatically with pip, conda or mamba. These are:
 
 ryp consists of just four functions:
 
-1. [`r(R_code)`](#r) runs a string of R code. [`r()`](#r) with no arguments 
+1. [`r(R_code)`](#r) runs a string of R code. [`r()`](#r) with no arguments
    opens up an R terminal inside your Python terminal for interactive work.
-2. [`to_r(python_object, R_variable_name)`](#to_r) converts a Python object 
-   into an R object named `R_variable_name`. 
-3. [`to_py(R_statement)`](#to_py) converts the R object produced by evaluating 
-   `R_statement` to Python. `R_statement` may be a single variable name, or a 
-   more complex code snippet that evaluates to the R object you'd like to 
+2. [`to_r(python_object, R_variable_name)`](#to_r) converts a Python object
+   into an R object named `R_variable_name`.
+3. [`to_py(R_statement)`](#to_py) converts the R object produced by evaluating
+   `R_statement` to Python. `R_statement` may be a single variable name, or a
+   more complex code snippet that evaluates to the R object you'd like to
    convert.
 4. [`options()`](#options), for getting or setting ryp's configuration options.
 
@@ -120,14 +121,14 @@ ryp consists of just four functions:
 r(R_code: str = ...) -> None
 ```
 
-`r(R_code)` runs a string of R code inside ryp's R interpreter, which is 
+`r(R_code)` runs a string of R code inside ryp's R interpreter, which is
 embedded inside Python. It can contain multiple statements separated by
 semicolons or newlines (e.g. within a triple-quoted Python string). It returns
-`None`; use `to_py()` instead if you would like to convert the result back to 
+`None`; use `to_py()` instead if you would like to convert the result back to
 Python.
 
-`r()` with no arguments opens up an R terminal inside your Python terminal 
-for interactive debugging. Press `Ctrl + D` to exit back to the Python 
+`r()` with no arguments opens up an R terminal inside your Python terminal
+for interactive debugging. Press `Ctrl + D` to exit back to the Python
 terminal. R variables defined from Python will be available in the R terminal,
 and variables defined in the R terminal will be available from Python once you
 exit:
@@ -146,21 +147,21 @@ exit:
 2
 ```
 
-Note that the default value for `R_code` is the special sentinel value `...` 
-(`Ellipsis`) rather than `None`. This stops users from inadvertently opening 
-the terminal when passing a variable that is supposed to be a string but is 
+Note that the default value for `R_code` is the special sentinel value `...`
+(`Ellipsis`) rather than `None`. This stops users from inadvertently opening
+the terminal when passing a variable that is supposed to be a string but is
 unexpectedly `None`.
 
 ### `to_r()`
 
 ```python
-to_r(python_object: object, R_variable_name: str, *, 
+to_r(python_object: object, R_variable_name: str, *,
      format: Literal['keep', 'matrix', 'data.frame'] | None = None,
      rownames: object = None, colnames: object = None) -> None
 ```
 
 `to_r(python_object, R_variable_name)` converts `python_object` to R, adding it
-to R's global namespace (`globalenv`) as a variable named `R_variable_name`. 
+to R's global namespace (`globalenv`) as a variable named `R_variable_name`.
 
 If `python_object` is a container (`list`, `tuple`, or `dict`), `to_r()`
 recursively converts each element and returns an R named list (if
@@ -169,48 +170,112 @@ recursively converts each element and returns an R named list (if
 
 #### The `format` argument
 
-By default (`format='keep'`), ryp converts polars and pandas DataFrames (and 
-pandas MultiIndexes) into R data frames, and 2D NumPy arrays into R matrices. 
+By default (`format='keep'`), ryp converts polars and pandas DataFrames (and
+pandas MultiIndexes) into R data frames, and 2D NumPy arrays into R matrices.
 Specify `format='matrix'` to convert everything (even DataFrames) to R matrices
-(in which case all DataFrame columns must have the same type), and 
-`format='data.frame'` to convert everything (even 2D NumPy arrays) to R 
+(in which case all DataFrame columns must have the same type), and
+`format='data.frame'` to convert everything (even 2D NumPy arrays) to R
 data frames.
 
 `format` must be `None` unless `python_object` is a DataFrame, MultiIndex or 2D
-NumPy array – or unless `python_object` is a `list`, `tuple`, or `dict`, in 
+NumPy array – or unless `python_object` is a `list`, `tuple`, or `dict`, in
 which case the `format` will apply recursively to any DataFrames, MultiIndexes
 or 2D NumPy arrays it contains.
 
 #### The `rownames` and `colnames` arguments
 
-Since NumPy arrays, polars DataFrames and Series, and scipy sparse arrays and 
-matrices lack row and column names, you can specify these separately via the 
+Since NumPy arrays, polars DataFrames and Series, and scipy sparse arrays and
+matrices lack row and column names, you can specify these separately via the
 `rownames` and/or `colnames` arguments, and they will be added to the converted
-R object. `rownames` and `colnames` can be lists, tuples, string Series, or 
+R object. `rownames` and `colnames` can be lists, tuples, string Series, or
 categorical Series with string categories, and will be automatically converted
-to R character vectors. 
+to R character vectors. `rownames` can also be a string naming a DataFrame
+column to use as the rownames; see
+[Using a DataFrame column as the rownames](#using-a-dataframe-column-as-the-rownames).
 
 `rownames` and `colnames` must match the length or `shape[1]`, respectively, of
 the object being converted. The one exception is that rownames of any length
-may be added to a 0 &times; 0 polars DataFrame, since polars does not have the 
-concept of an `N` &times; 0 DataFrame for nonzero `N`. (Dropping all the 
-columns of a polars DataFrame always results in a 0 &times; 0 DataFrame, even 
+may be added to a 0 &times; 0 polars DataFrame, since polars does not have the
+concept of an `N` &times; 0 DataFrame for nonzero `N`. (Dropping all the
+columns of a polars DataFrame always results in a 0 &times; 0 DataFrame, even
 if the original DataFrame had more than 0 rows.)
 
 Because Python `bool`, `int`, `float`, and `str` convert to length-1 R vectors
 that support names, you can pass length-1 `rownames` when converting objects of
-these types. You can also pass `rownames` and/or `colnames` when 
-`python_object` is a `list`, `tuple`, or `dict`, in which case row and column 
-names will only be added to elements that support them. All elements that 
-support `rownames` must have the same length as the `rownames`, and similarly 
-for the `colnames`. 
+these types. You can also pass `rownames` and/or `colnames` when
+`python_object` is a `list`, `tuple`, or `dict`, in which case row and column
+names will only be added to elements that support them. All elements that
+support `rownames` must have the same length as the `rownames`, and similarly
+for the `colnames`.
 
-`rownames` cannot be specified if `python_object` is a pandas Series or 
-DataFrame (since they already have rownames, i.e. an index), or 
-`bytes`/`bytearray` (since these convert to `raw` vectors, which lack 
-rownames). `colnames` cannot be specified unless `python_object` is a 
-multidimensional NumPy array or scipy sparse array or matrix, or something that
-might contain one (`list`, `tuple`, or `dict`).
+`rownames` cannot be specified if `python_object` is a pandas Series or
+DataFrame (since they already have rownames, i.e. an index), or
+`bytes`/`bytearray` (since these convert to `raw` vectors, which lack
+rownames). The one exception is that `rownames` can be a string naming one of
+a pandas DataFrame's columns, as described below. `colnames` cannot be
+specified unless `python_object` is a multidimensional NumPy array or scipy
+sparse array or matrix, or something that might contain one (`list`, `tuple`,
+or `dict`).
+
+#### Using a DataFrame column as the rownames
+
+`rownames` can also be a string naming a column of a polars or pandas
+DataFrame, in which case that column is used as the rownames and removed from
+the converted R data frame or matrix:
+
+```python
+import polars as pl
+from ryp import r, to_r
+data = pl.DataFrame({'gene': ['TP53', 'BRCA1', 'MYC'],
+                     'sample1': [1.5, 2.0, 0.5], 'sample2': [0.7, 1.1, 3.2]})
+to_r(data, 'data', rownames='gene')
+r('data')
+#       sample1 sample2
+# TP53      1.5     0.7
+# BRCA1     2.0     1.1
+# MYC       0.5     3.2
+```
+
+This is particularly useful with `format='matrix'`, which requires all columns
+to have the same data type: since the (string) rownames column is removed
+before converting, `to_r(data, 'data', format='matrix', rownames='gene')` gives
+a numeric matrix with the genes as rownames, even though `data` has a mix of
+string and numeric columns.
+
+The rules for string `rownames` are:
+
+- `python_object` must be a polars or pandas DataFrame, or a `list`, `tuple`,
+  or `dict` that contains at least one polars or pandas DataFrame (possibly
+  nested inside other `list`s, `tuple`s, or `dict`s). Anything else (including
+  pandas Series, pandas MultiIndexes, NumPy arrays, and scalars) gives an
+  error. To name a scalar, pass a length-1 list instead, e.g.
+  `to_r('hello', 'x', rownames=['a'])` rather than
+  `to_r('hello', 'x', rownames='a')`.
+- The column must exist. For pandas, exactly one column must have that name,
+  since pandas allows duplicate column names.
+- The column must contain strings or be a categorical (including a polars
+  `Enum`) with string categories, since R rownames must be strings. For pandas,
+  `object` columns are allowed as long as every element is a string.
+- When converting to a data frame (i.e. unless `format='matrix'`), the column
+  cannot contain missing values or duplicates, since R does not allow these in
+  data frame rownames. R matrices do allow them, so they are permitted with
+  `format='matrix'`.
+- For pandas, the DataFrame must have the default index
+  (`pd.RangeIndex(len(python_object))`), since otherwise there would be two
+  competing sources of rownames: the index and the column. Call `reset_index()`
+  or `reset_index(drop=True)` first, or leave `rownames=None` to use the
+  index as the rownames. For pandas, `rownames='col'` is equivalent to calling
+  `to_r(python_object.set_index('col'), ...)`.
+- If the column is the DataFrame's only column, the result is a data frame (or
+  matrix) with zero columns but with the original number of rows, unlike the
+  0 &times; 0 DataFrame you would get by dropping the column in polars.
+- When `python_object` is a `list`, `tuple`, or `dict`, each DataFrame it
+  contains gets its rownames from its own copy of the column, so the
+  DataFrames do not need to have the same number of rows (unlike when
+  `rownames` is a list, tuple, or Series). Every DataFrame must have the
+  column, and each is subject to all the rules above. All other elements,
+  including NumPy arrays and polars Series that would otherwise accept
+  `rownames`, are converted without rownames.
 
 ### `to_py()`
 
@@ -224,46 +289,46 @@ to_py(R_statement: str, *,
       squeeze: bool | None = None) -> Any
 ```
 
-`to_py(R_statement)` runs a single statement of R code (which can be as simple 
-as a single variable name) and converts the resulting R object to Python. 
+`to_py(R_statement)` runs a single statement of R code (which can be as simple
+as a single variable name) and converts the resulting R object to Python.
 
 If the object is a list/S3 object, S4 object, or environment/R6 object, it
-recursively converts each attribute/slot/field and returns a Python `dict` (or 
+recursively converts each attribute/slot/field and returns a Python `dict` (or
 `list`, if the object is an unnamed list). For R6 objects, only public fields
 will be converted.
 
 #### The `format` argument
 
-By default, or when `format='polars'`, R vectors will be converted to polars 
-Series, and R data frames and matrices will be converted to polars DataFrames. 
-You can change this by setting the `format` argument to `'pandas'`, 
-`'pandas-pyarrow'` (like `'pandas'`, but converting to pyarrow dtypes wherever 
-possible) or `'numpy'`. (You can also change the default format, e.g. with 
+By default, or when `format='polars'`, R vectors will be converted to polars
+Series, and R data frames and matrices will be converted to polars DataFrames.
+You can change this by setting the `format` argument to `'pandas'`,
+`'pandas-pyarrow'` (like `'pandas'`, but converting to pyarrow dtypes wherever
+possible) or `'numpy'`. (You can also change the default format, e.g. with
 `options(to_py_format='pandas')`.)
 
-For finer-grained control, you can set `format` for only certain R variable 
+For finer-grained control, you can set `format` for only certain R variable
 types by specifying a dictionary with `'vector'`, `'matrix'`, and/or
-`'data.frame'` as keys and `'polars'`, `'pandas'`, `'pandas-pyarrow'` and/or 
-`'numpy'` as values. 
+`'data.frame'` as keys and `'polars'`, `'pandas'`, `'pandas-pyarrow'` and/or
+`'numpy'` as values.
 
-`format` must be `None` when `R_statement` evaluates to `NULL`, when it 
-evaluates to an array of 3 or more dimensions (these are always converted to 
+`format` must be `None` when `R_statement` evaluates to `NULL`, when it
+evaluates to an array of 3 or more dimensions (these are always converted to
 NumPy arrays), or when the final result would be a Python scalar (see `squeeze`
 below).
 
 #### The `index` argument
 
-By default, the R object's `names` or `rownames` will become the index (for 
-pandas) or the first column (for polars) of the output Python object, named 
-`'index'`. Set the `index` argument to a different string to change this name, 
-or set `index=False` to not convert the `names`/`rownames`. 
+By default, the R object's `names` or `rownames` will become the index (for
+pandas) or the first column (for polars) of the output Python object, named
+`'index'`. Set the `index` argument to a different string to change this name,
+or set `index=False` to not convert the `names`/`rownames`.
 
 Note that for polars, the output will be a two-column DataFrame (not a Series!)
-when the input is an R vector, unless `index=False`. 
+when the input is an R vector, unless `index=False`.
 
-When the output is a NumPy array, `names` and `rownames` will always be 
-discarded, since numeric NumPy arrays cannot store string indexes except with 
-the inefficient `dtype=object`. 
+When the output is a NumPy array, `names` and `rownames` will always be
+discarded, since numeric NumPy arrays cannot store string indexes except with
+the inefficient `dtype=object`.
 
 `index` must be `None` when `format='numpy'`, or when the final result would be
 a Python scalar (see `squeeze` below).
@@ -273,7 +338,7 @@ a Python scalar (see `squeeze` below).
 By default, length-1 R vectors, matrices and arrays will be converted to Python
 scalars instead of Python arrays, Series or DataFrames. Set `squeeze=False` to
 disable this special case. (R data frames are never converted to Python scalars
-even if `squeeze=True`.) 
+even if `squeeze=True`.)
 
 `squeeze` must be `None` unless the R object is a vector, matrix or array
 (`raw` vectors don't count, because they always convert to Python scalars).
@@ -281,36 +346,36 @@ even if `squeeze=True`.)
 ### `options()`
 
 ```python
-options(*, to_r_format=None, to_py_format=None, index=None, squeeze=None, 
-        plot_width: int | float | None = None, 
+options(*, to_r_format=None, to_py_format=None, index=None, squeeze=None,
+        plot_width: int | float | None = None,
         plot_height: int | float | None = None) -> None
 ```
 
 `options` gets or sets ryp's configuration settings:
 
-- `to_r_format`: the default value for the `format` parameter in `to_r()`; 
+- `to_r_format`: the default value for the `format` parameter in `to_r()`;
   must be `'keep'` (the default), `'matrix'`, or `'data.frame'`.
-- `to_py_format`: the default value for the `format` parameter in `to_py()`; 
+- `to_py_format`: the default value for the `format` parameter in `to_py()`;
   must be `'polars'` (the default), `'pandas'`, `'pandas-pyarrow'`, `'numpy'`,
   or a dictionary with one of those four Python formats and/or `None` as values
-  and `'vector'`, `'matrix'` and/or `'data.frame'` as keys. If certain keys are 
+  and `'vector'`, `'matrix'` and/or `'data.frame'` as keys. If certain keys are
   missing or have `None` as the format, leave their format unchanged.
-- `index`: the default value for the `index` parameter in to_py(); must be a 
-  string (default: `'index'`) or `False`. 
-- `squeeze`: the default value for the `squeeze` parameter in `to_py()`; must  
+- `index`: the default value for the `index` parameter in to_py(); must be a
+  string (default: `'index'`) or `False`.
+- `squeeze`: the default value for the `squeeze` parameter in `to_py()`; must
   be `True` (the default) or `False`.
 - `plot_width`: the width, in inches, of inline plots in Jupyter notebooks;
-  must be a positive number. Defaults to 6.4 inches, to match Matplotlib's 
+  must be a positive number. Defaults to 6.4 inches, to match Matplotlib's
   default.
 - `plot_height`: the height, in inches, of inline plots in Jupyter notebooks;
-  must be a positive number. Defaults to 4.8 inches, to match Matplotlib's 
+  must be a positive number. Defaults to 4.8 inches, to match Matplotlib's
   default.
 
-For instance, to set pandas as the default format in `to_py()`, run 
+For instance, to set pandas as the default format in `to_py()`, run
 `options(to_py_format='pandas')`. This leaves the other options unchanged.
 
-`options()` with no arguments returns the current configuration options as a 
-dictionary, with keys `to_r_format`, `to_py_format`, `index`, `squeeze`, 
+`options()` with no arguments returns the current configuration options as a
+dictionary, with keys `to_r_format`, `to_py_format`, `index`, `squeeze`,
 `plot_width`, and `plot_height`.
 
 For additional customization, users can specify ryp-specific settings in their
@@ -328,20 +393,20 @@ if ("ryp" %in% commandArgs()) {
 
 ### Python to R (`to_r()`)
 
-Arrays and Series with `float64`, `int32`, `int64`, `uint32`, and `uint64` data 
-types will be converted without copying the underlying data ("zero-copy"). This 
+Arrays and Series with `float64`, `int32`, `int64`, `uint32`, and `uint64` data
+types will be converted without copying the underlying data ("zero-copy"). This
 is extremely fast but comes with two important caveats:
 
 1. Modifying the data in R will also modify it in Python, and vice versa.
-2. Because R lacks support for unsigned integers, `uint32` values will be 
-   reinterpreted as `int32` and `uint64` values will be reinterpreted as 
-   `int64`. This means that for `uint32`, `2_147_483_648` (`INT32_MAX + 1`) 
-   will become `NA` and larger values will become negative numbers. For 
-   `uint64`, `9_223_372_036_854_775_808` (`INT64_MAX + 1`) will become `NA` and 
+2. Because R lacks support for unsigned integers, `uint32` values will be
+   reinterpreted as `int32` and `uint64` values will be reinterpreted as
+   `int64`. This means that for `uint32`, `2_147_483_648` (`INT32_MAX + 1`)
+   will become `NA` and larger values will become negative numbers. For
+   `uint64`, `9_223_372_036_854_775_808` (`INT64_MAX + 1`) will become `NA` and
    larger values will become negative numbers.
 
 Polars Series with `null` values or multiple chunks, and pandas Series with
-non-NumPy data types, will *not* be converted zero-copy, but are still subject 
+non-NumPy data types, will *not* be converted zero-copy, but are still subject
 to caveat #2.
 
 | Python                                                                  | R                                                                                                         |
@@ -349,7 +414,7 @@ to caveat #2.
 | `None`                                                                  | `NULL` (if scalar) or `NA` (if inside NumPy, pandas or polars)                                            |
 | `nan`                                                                   | `NaN` (if scalar or inside NumPy or polars) or `NA` (if inside pandas)                                    |
 | `pd.NA`                                                                 | `NA`                                                                                                      |
-| `pd.NaT`, `np.datetime64('NaT')`, `np.timedelta64('NaT')`               | `NA`                                                                                                      |   
+| `pd.NaT`, `np.datetime64('NaT')`, `np.timedelta64('NaT')`               | `NA`                                                                                                      |
 | `bool`                                                                  | length-1 `logical` vector                                                                                 |
 | `int`                                                                   | length-1 `integer` (if `abs(x) <= 2_147_483_647`) or `bit64::integer64` vector                            |
 | `float`                                                                 | length-1 `numeric` vector                                                                                 |
@@ -368,7 +433,7 @@ to caveat #2.
 | 2D NumPy array                                                          | `data.frame` (if `format == 'data.frame'`) or matrix<sup>&dagger;</sup>                                   |
 | &ge; 3D NumPy array                                                     | array<sup>&dagger;</sup>                                                                                  |
 | 0D NumPy array (e.g. `np.array(1)`), NumPy generic (e.g. `np.int32(1)`) | length-1 vector                                                                                           |
-| `csr_array`, `csr_matrix`                                               | `dgRMatrix` (if `float64`), `lgRMatrix` (if `bool`), -- (otherwise)                                       | 
+| `csr_array`, `csr_matrix`                                               | `dgRMatrix` (if `float64`), `lgRMatrix` (if `bool`), -- (otherwise)                                       |
 | `csc_array`, `csc_matrix`                                               | `dgCMatrix` (if `float64`), `lgCMatrix` (if `bool`), -- (otherwise)                                       |
 | `coo_array`, `coo_matrix`                                               | `dgTMatrix` (if `float64`), `lgTMatrix` (if `bool`), -- (otherwise)                                       |
 
@@ -383,7 +448,7 @@ to caveat #2.
 | `complex64`, `complex128`                             | `complex`                                  |
 | `bytes` (e.g. `'S1'`)                                 | --                                         |
 | `str`/`unicode` (e.g. `'U1'`)                         | `character`                                |
-| `datetime64`                                          | `POSIXct`                                  | 
+| `datetime64`                                          | `POSIXct`                                  |
 | `timedelta64`                                         | `difftime(units='secs')`                   |
 | `void` (unstructured)                                 | `raw`                                      |
 | `void` (structured)                                   | --                                         |
@@ -395,7 +460,7 @@ to caveat #2.
 |-------------------------------------------------------------------------------------|--------------------|
 | `BooleanDtype`                                                                      | `logical`          |
 | `Int8Dtype`, `UInt8Dtype`, `Int16Dtype`, `UInt16Dtype`, `Int32Dtype`, `UInt32Dtype` | `integer`          |
-| `Int64Dtype`, `UInt64Dtype`                                                         | `bit64::integer64` |  
+| `Int64Dtype`, `UInt64Dtype`                                                         | `bit64::integer64` |
 | `Float32Dtype`, `Float64Dtype`                                                      | `numeric`          |
 | `StringDtype`                                                                       | `character`        |
 | `CategoricalDtype(ordered=False)`                                                   | unordered `factor` |
@@ -436,16 +501,16 @@ to caveat #2.
 | `Categorical`                                         | unordered `factor`                         |
 | `Enum`                                                | ordered `factor`                           |
 | `Object`                                              | depends on the contents<sup>&Dagger;</sup> |
-| `Null`                                                | `vctrs::unspecified`                       | 
+| `Null`                                                | `vctrs::unspecified`                       |
 | `Binary`, `Decimal`, `List`, `Array`                  | --                                         |
 
 #### Notes
 
-<sup>&ast;</sup> For pandas Series and DataFrames, string indexes (and 
+<sup>&ast;</sup> For pandas Series and DataFrames, string indexes (and
 categorical indexes where the categories are strings) will be automatically
 converted to `names`/`rownames`. The default index
 (`pd.RangeIndex(len(python_object))`) will be ignored. All other indexes are
-disallowed. 
+disallowed.
 
 <sup>&dagger;</sup> Because R does not support `POSIXct` and `Date` matrices or
 arrays, dates and datetimes cannot be converted to R matrices or arrays.
@@ -453,28 +518,28 @@ arrays, dates and datetimes cannot be converted to R matrices or arrays.
 <sup>&Dagger;</sup> For `dtype=object` and `dtype=pl.Object`, the output R type
 depends on the contents, e.g. `'character'` if all elements are strings. Some
 additional notes on ryp's handling of object data types:
-- `None`, `np.nan`, `pd.NA`, `pd.NaT`, `np.datetime64('NaT')`, and 
-  `np.timedelta64('NaT')` are all treated as missing values &ndash; even for 
-  polars, where `np.nan` is ordinarily treated as a floating-point number 
-  rather than a missing value. 
+- `None`, `np.nan`, `pd.NA`, `pd.NaT`, `np.datetime64('NaT')`, and
+  `np.timedelta64('NaT')` are all treated as missing values &ndash; even for
+  polars, where `np.nan` is ordinarily treated as a floating-point number
+  rather than a missing value.
 - Length-0 and all-missing data will be converted to the `vctrs::unspecified` R
-  type (`vctrs` is part of the tidyverse). 
+  type (`vctrs` is part of the tidyverse).
 - If the elements are objects with a mix of types (or datetimes with a mix of
   time zones), Arrow will generally cause the conversion to fail, though mixes
   of related types (e.g. int and float) will be automatically cast to the
-  common supertype and succeed. 
-- Conversion will also fail if the contents are objects that are not 
+  common supertype and succeed.
+- Conversion will also fail if the contents are objects that are not
   representable as R vector elements. This includes `bytes`/`bytearray` (which
   are only representable in R when scalar, as a `raw` vector) and Python
-  containers (`list`, `tuple`, and  `dict`). 
+  containers (`list`, `tuple`, and  `dict`).
 - pandas `Timedelta` objects will be rounded down to the nearest microsecond,
   following the behavior of Arrow.
 
 ### R to Python (`to_py()`)
 
 Unlike `to_r()`, zero-copy conversion is only guaranteed when:
-1. The data being converted is backed by an Arrow array. This is the case for 
-   data that was previously converted from Python with `to_py()`, or that the 
+1. The data being converted is backed by an Arrow array. This is the case for
+   data that was previously converted from Python with `to_py()`, or that the
    user created manually from an Arrow array.
 2. The data is integer (i.e. `int32`) or numeric (i.e. `float64`).
 3. The data is being converted to a NumPy array or polars Series.
@@ -484,14 +549,14 @@ Unlike `to_r()`, zero-copy conversion is only guaranteed when:
 | `NULL`                                                                       | `None`                                                                                                                                                                                        |
 | `NA`                                                                         | `None` (if scalar or `format='polars'`), `None`/`nan`/`pd.NA`/`pd.NaT`/`np.datetime64('NaT', 'us')`/`np.timedelta64('NaT', 'ns')`/etc. (if `format='numpy'` `'pandas'` or `'pandas-pyarrow'`) |
 | `NaN`                                                                        | `nan`                                                                                                                                                                                         |
-| length-1 vector, matrix or array, `squeeze == False`                         | scalar                                                                                                                                                                                        | 
+| length-1 vector, matrix or array, `squeeze == False`                         | scalar                                                                                                                                                                                        |
 | vector or 1D array, `format == 'numpy'`                                      | 1D NumPy array                                                                                                                                                                                |
 | vector or 1D array, `format == 'pandas'` or `format == 'pandas-pyarrow'`     | pandas Series                                                                                                                                                                                 |
 | vector or 1D array, `format == 'polars'`                                     | polars Series (if `index=False`) or two-column DataFrame                                                                                                                                      |
 | matrix or `data.frame`, `format == 'numpy'`                                  | 2D NumPy array                                                                                                                                                                                |
 | matrix or `data.frame`, `format == 'pandas'` or `format == 'pandas-pyarrow'` | pandas DataFrame                                                                                                                                                                              |
 | matrix or `data.frame`, `format == 'polars'`                                 | polars DataFrame                                                                                                                                                                              |
-| &ge; 3D array                                                                | NumPy array                                                                                                                                                                                   |  
+| &ge; 3D array                                                                | NumPy array                                                                                                                                                                                   |
 | unnamed list                                                                 | `list`                                                                                                                                                                                        |
 | named list, S3 object, S4 object, environment, S6 object                     | `dict`                                                                                                                                                                                        |
 | `dgRMatrix`                                                                  | `csr_array(dtype='float64')`                                                                                                                                                                  |
@@ -516,7 +581,7 @@ Unlike `to_r()`, zero-copy conversion is only guaranteed when:
 | unordered `factor`          | `str`                                | `object` (with `str` elements)                           | `CategoricalDtype(ordered=False)`                        | `ArrowDtype(pa.dictionary(pa.int8(), pa.string(), ordered=0))` | `Categorical`                              |
 | ordered `factor`            | `str`                                | `object` (with `str` elements)                           | `CategoricalDtype(ordered=True)`                         | `ArrowDtype(pa.dictionary(pa.int8(), pa.string(), ordered=1))` | `Enum`                                     |
 | `POSIXct` without time zone | `datetime.datetime`<sup>&ast;</sup>  | `datetime64[us]`<sup>&ast;</sup>                         | `datetime64[us]`<sup>&ast;</sup>                         | `ArrowDtype(pa.timestamp('us'))`<sup>&ast;</sup>               | `Datetime('us')`<sup>&ast;</sup>           |
-| `POSIXct` with time zone    | `datetime.datetime`<sup>&ast;</sup>  | `datetime64[us]`<sup>&ast;</sup> (time zone discarded)   | `DatetimeTZDtype('us', time_zone)`<sup>&ast;</sup>       | `ArrowDtype(pa.timestamp('us', time_zone))`<sup>&ast;</sup>    | `Datetime('us, time_zone)`<sup>&ast;</sup> | 
+| `POSIXct` with time zone    | `datetime.datetime`<sup>&ast;</sup>  | `datetime64[us]`<sup>&ast;</sup> (time zone discarded)   | `DatetimeTZDtype('us', time_zone)`<sup>&ast;</sup>       | `ArrowDtype(pa.timestamp('us', time_zone))`<sup>&ast;</sup>    | `Datetime('us, time_zone)`<sup>&ast;</sup> |
 | `POSIXlt`                   | `dict` of scalars                    | `dict` of NumPy arrays                                   | `dict` of pandas Series                                  | `dict` of pandas Series                                        | `dict` of polars Series                    |
 | `Date`                      | `datetime.date`                      | `datetime64[D]`                                          | `datetime64[ms]`                                         | `ArrowDtype(pa.date32('day'))`                                 | `Date`                                     |
 | `difftime`                  | `datetime.timedelta`<sup>&ast;</sup> | `timedelta64[ns]`                                        | `timedelta64[ns]`                                        | `ArrowDtype(pa.duration('ns'))`                                | `Duration(time_unit='ns')`                 |
@@ -553,7 +618,7 @@ scaled_data
 # 2  1.0  0.872872
 ```
 Note: we could have just written `to_py('scale(data)')` instead of
-`r('data <- scale(data)')` followed by `to_py('data')`. We could also have 
+`r('data <- scale(data)')` followed by `to_py('data')`. We could also have
 run `options(to_py_format='pandas')` at the top, to avoid having to specify
 `format='pandas'` in each `to_py()` call.
 
@@ -586,7 +651,7 @@ r('arrays')
 #      col1 col2
 # row1    1    2
 # row2    3    4
-# 
+#
 # $floats
 #      col1 col2
 # row1  0.5  1.5
